@@ -2,7 +2,7 @@
 #define XUNDO_H
 #pragma once
 
-#include "../dependencies/xcmdline/source/xcmdline_parser.h"
+#include "xcmdline_parser.h"
 #include <format>
 #include <iostream>
 #include <vector>
