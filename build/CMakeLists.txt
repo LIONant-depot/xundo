@@ -32,6 +32,6 @@ endif()
 if(NOT TARGET xundo)
   add_library(xundo INTERFACE)
   # Assuming xundo has headers in its root; adjust if different
-  target_include_directories(xundo INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+  target_include_directories(xundo INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/../source")
   target_link_libraries(xundo INTERFACE xcmdline)
 endif()
