@@ -25,8 +25,6 @@ endif()
 # Define xcmdline as an interface library only if not already defined
 if(NOT TARGET xcmdline)
   add_subdirectory("../dependency/xcmdline/build" "${CMAKE_CURRENT_BINARY_DIR}/xcmdline")
-  add_library(xcmdline INTERFACE)
-  target_include_directories(xcmdline INTERFACE "${xcmdline_SOURCE_DIR}/source")
 endif()
 
 # Define xundo as an interface library only if not already defined
