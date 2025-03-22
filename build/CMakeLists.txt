@@ -13,18 +13,17 @@ FetchContent_Declare(
 )
 
 # Populate xcmdline only if not already populated
-FetchContent_MakeAvailable(xcmdline)
 if(NOT xcmdline_POPULATED)
   message(STATUS "Populating xcmdline for xundo...")
-  FetchContent_Populate(xcmdline)
+  FetchContent_MakeAvailable(xcmdline)
   if(NOT EXISTS "${xcmdline_SOURCE_DIR}/source/xcmdline_parser.h")
     message(FATAL_ERROR "Failed to download xcmdline or xcmdline_parser.h not found in ${xcmdline_SOURCE_DIR}")
   endif()
+  add_subdirectory("../dependency/xcmdline/build" "${CMAKE_CURRENT_BINARY_DIR}/xcmdline")
 endif()
 
 # Define xcmdline as an interface library only if not already defined
 if(NOT TARGET xcmdline)
-  add_subdirectory("../dependency/xcmdline/build" "${CMAKE_CURRENT_BINARY_DIR}/xcmdline")
 endif()
 
 # Define xundo as an interface library only if not already defined
