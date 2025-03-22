@@ -13,7 +13,7 @@ FetchContent_Declare(
 )
 
 # Populate xcmdline only if not already populated
-FetchContent_GetProperties(xcmdline)
+FetchContent_MakeAvailable(xcmdline)
 if(NOT xcmdline_POPULATED)
   message(STATUS "Populating xcmdline for xundo...")
   FetchContent_Populate(xcmdline)
@@ -24,6 +24,7 @@ endif()
 
 # Define xcmdline as an interface library only if not already defined
 if(NOT TARGET xcmdline)
+  add_subdirectory("../dependency/xcmdline/build" "${CMAKE_CURRENT_BINARY_DIR}/xcmdline")
   add_library(xcmdline INTERFACE)
   target_include_directories(xcmdline INTERFACE "${xcmdline_SOURCE_DIR}/source")
 endif()
