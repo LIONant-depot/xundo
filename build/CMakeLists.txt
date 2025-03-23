@@ -16,14 +16,14 @@ if(NOT xcmdline_POPULATED)
   message(STATUS "Making xcmdline available for xundo...")
   FetchContent_MakeAvailable(xcmdline)
   # Include xcmdline's configuration from the fetched location
-  add_subdirectory("${xcmdline_SOURCE_DIR}/build")
+  add_subdirectory("${xcmdline_SOURCE_DIR}/build" "${CMAKE_CURRENT_BINARY_DIR}/xcmdline")  
 endif()
 
 FetchContent_GetProperties(xundo)
 if(NOT TARGET xundo)
   add_library(xundo INTERFACE)
   target_include_directories(xundo INTERFACE
-    "${xcmdline_SOURCE_DIR}/../source"  # Ensure this path is correct
+    "${xcmdline_SOURCE_DIR}/../source"  	 # Ensure this path is correct
     "${CMAKE_CURRENT_SOURCE_DIR}/../source"  # Adjusted to use CMAKE_CURRENT_SOURCE_DIR for xundo
   )
   target_link_libraries(xundo INTERFACE xcmdline)  
