@@ -3,6 +3,9 @@ cmake_minimum_required(VERSION 3.10)
 
 include(FetchContent)
 
+#
+# Handle xcmdline
+#
 FetchContent_Declare(
   xcmdline
   GIT_REPOSITORY https://github.com/LIONant-depot/xcmdline.git
@@ -10,7 +13,6 @@ FetchContent_Declare(
   SOURCE_DIR     "${CMAKE_CURRENT_SOURCE_DIR}/../dependency/xcmdline"
 )
 
-# Check if xcmdline is already populated
 FetchContent_GetProperties(xcmdline)
 if(NOT xcmdline_POPULATED)
   message(STATUS "Making xcmdline available for xundo...")
@@ -19,12 +21,17 @@ if(NOT xcmdline_POPULATED)
   add_subdirectory("${xcmdline_SOURCE_DIR}/build" "${CMAKE_CURRENT_BINARY_DIR}/xcmdline")  
 endif()
 
+#
+# Handle xundo
+#
 FetchContent_GetProperties(xundo)
 if(NOT TARGET xundo)
   add_library(xundo INTERFACE)
   target_include_directories(xundo INTERFACE
     "${CMAKE_CURRENT_SOURCE_DIR}/../source"  # Adjusted to use CMAKE_CURRENT_SOURCE_DIR for xundo
   )
+  
+  # Make xcmdline a dependency of xundo... this way the user just need to link with xundo...
   target_link_libraries(xundo INTERFACE xcmdline)  
 endif()
 
