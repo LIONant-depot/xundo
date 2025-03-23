@@ -23,7 +23,6 @@ FetchContent_GetProperties(xundo)
 if(NOT TARGET xundo)
   add_library(xundo INTERFACE)
   target_include_directories(xundo INTERFACE
-    "${xcmdline_SOURCE_DIR}/../source"  	 # Ensure this path is correct
     "${CMAKE_CURRENT_SOURCE_DIR}/../source"  # Adjusted to use CMAKE_CURRENT_SOURCE_DIR for xundo
   )
   target_link_libraries(xundo INTERFACE xcmdline)  
