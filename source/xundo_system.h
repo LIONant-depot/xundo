@@ -181,7 +181,7 @@ namespace xundo
             // Fetches undo data into cache
             void Execute() noexcept override;
 
-            // Loads entry data—key or cache selectable
+            // Loads entry dataï¿½key or cache selectable
             static bool Load(history_entry& Entry, std::string_view Path, bool bLoadKeyData, bool bLoadCacheData) noexcept
             {
                 FILE* File;
@@ -273,11 +273,15 @@ namespace xundo
         virtual void            Undo                (undo_file& File)   noexcept = 0;
         virtual void            BackupCurrenState   (undo_file& File)   noexcept = 0;
 
-        // Parses command string into arguments
+        // Parses command string into arguments. xcmdline::parser::Parse returns an xerr (this
+        // vendored copy of xcmdline predates that and used to return a plain std::string directly) -
+        // convert at the boundary so the rest of xundo's own std::string-based error convention
+        // doesn't need to change.
         std::string             Parse(std::string_view cmd_str) noexcept
         {
             m_Parser.clearArgs();
-            return m_Parser.Parse(cmd_str);
+            if (auto Err = m_Parser.Parse(cmd_str); Err) return std::string(Err.getMessage());
+            return {};
         }
 
         // Members: Core command data
@@ -469,6 +473,59 @@ namespace xundo
                 UpdateLRU();
             }
             return {};
+        }
+
+        //-------------------------------------------------------------------------------------------------------
+        // Clears all history (e.g. after loading an entirely different document, where the old undo
+        // steps no longer refer to anything meaningful) - registered commands stay registered.
+        //-------------------------------------------------------------------------------------------------------
+        void Reset() noexcept
+        {
+            m_History.clear();
+            m_LRU.clear();
+            m_UndoIndex = 0;
+        }
+
+        //-------------------------------------------------------------------------------------------------------
+        // Read-only history view, for a UI that wants to show/pick from the full undo/redo timeline
+        // (e.g. a history dropdown next to Undo/Redo buttons) rather than only stepping one at a time.
+        //-------------------------------------------------------------------------------------------------------
+        [[nodiscard]] std::size_t GetHistoryCount() const noexcept { return m_History.size(); }
+        [[nodiscard]] int         GetUndoIndex()    const noexcept { return m_UndoIndex; }
+        [[nodiscard]] const std::string& GetHistoryCommandString(std::size_t Index) const noexcept { return m_History[Index]->m_CommandString; }
+
+        // Like GetHistoryCommandString, but expands a GROUP entry (Execute(group_name, {sub-commands}))
+        // into "group_name { sub1; sub2; ... }" instead of just the bare group label - a group's own
+        // m_CommandString alone tells a UI nothing about what it actually did.
+        [[nodiscard]] std::string GetHistoryDisplayString(std::size_t Index) const noexcept
+        {
+            auto& Entry = *m_History[Index];
+            if (!Entry.IsGroup()) return Entry.m_CommandString;
+            std::string Out = Entry.m_CommandString + " {";
+            for (std::size_t i = 0; i < Entry.m_SubCommands.size(); ++i)
+            {
+                if (i) Out += ";";
+                Out += " " + Entry.m_SubCommands[i].m_CommandString;
+            }
+            Out += " }";
+            return Out;
+        }
+
+        // Granular group access, for a UI that wants to render a group entry as an expandable tree
+        // (label + indented children) instead of one flattened line.
+        [[nodiscard]] bool        IsHistoryGroup(std::size_t Index) const noexcept { return m_History[Index]->IsGroup(); }
+        [[nodiscard]] std::size_t GetHistorySubCommandCount(std::size_t Index) const noexcept { return m_History[Index]->m_SubCommands.size(); }
+        [[nodiscard]] const std::string& GetHistorySubCommandString(std::size_t Index, std::size_t SubIndex) const noexcept { return m_History[Index]->m_SubCommands[SubIndex].m_CommandString; }
+
+        // Steps Undo()/Redo() (never anything else - so every intermediate step's own logic still runs
+        // exactly as it would one at a time) until the index lands on TargetIndex, clamped to the valid
+        // range - lets a history dropdown jump straight to any point in the timeline in one call.
+        system& JumpTo(int TargetIndex) noexcept
+        {
+            TargetIndex = std::clamp(TargetIndex, 0, static_cast<int>(m_History.size()));
+            while (m_UndoIndex > TargetIndex) Undo();
+            while (m_UndoIndex < TargetIndex) Redo();
+            return *this;
         }
 
         //-------------------------------------------------------------------------------------------------------
@@ -841,7 +898,7 @@ namespace xundo
 
             std::vector<std::uint64_t> TimeStamps;
 
-            // Excess only if size exceeds max—no underflow
+            // Excess only if size exceeds maxï¿½no underflow
             size_t Excess = m_History.size() > m_MaxUndoSteps ? m_History.size() - m_MaxUndoSteps : 0;
             TimeStamps.reserve(Excess);
 
