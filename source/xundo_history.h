@@ -33,12 +33,14 @@ namespace xundo
         void AddSystem(const std::string& Name, uint64_t SystemGUID, system& Sys, bool bDeleteOnExit = false ) noexcept
         {
             assert(m_Systems.find(SystemGUID) == m_Systems.end());
+            assert(m_NameToGUID.find(Name) == m_NameToGUID.end()); // Route()/Query() below need names unique
 
             system_info Info;
             Info.m_SystemName   = Name;
             Info.m_System       = &Sys;
             Info.m_bOwnMemory   = bDeleteOnExit;
             m_Systems[SystemGUID] = Info;
+            m_NameToGUID[Name]  = SystemGUID;
         }
 
         // Gets a system by GUID
@@ -47,6 +49,14 @@ namespace xundo
             auto It = m_Systems.find(GUID);
             assert(It != m_Systems.end());
             return *It->second.m_System;
+        }
+
+        // Gets a system by the name it was registered under (see AddSystem/Route) - nullptr if none.
+        system* GetSystemByName(std::string_view Name) noexcept
+        {
+            auto It = m_NameToGUID.find(std::string(Name));
+            if (It == m_NameToGUID.end()) return nullptr;
+            return &GetSystem(It->second);
         }
 
         //-------------------------------------------------------------------------------------------------------
@@ -87,7 +97,7 @@ namespace xundo
             {
                 if (It->m_SystemGUID == SystemGUID)
                 {
-                    // Multi-system step—stop unless only this system
+                    // Multi-system stepï¿½stop unless only this system
                     if (!It->m_AffectedSystems.empty()) return;
 
                     Sys.Undo();
@@ -114,7 +124,7 @@ namespace xundo
             history_entry Entry;
             Entry.m_SystemGUID = SystemGUID;
             Entry.m_UndoIndex = Sys.m_UndoIndex - 1; // Match local index
-            Entry.m_AffectedSystems = {}; // Default empty—parse if needed
+            Entry.m_AffectedSystems = {}; // Default emptyï¿½parse if needed
 
             // Binary search to find insertion point based on timestamp
             size_t Left = 0;
@@ -148,7 +158,7 @@ namespace xundo
             system& Sys = GetSystem(SystemGUID);
 
             std::string Result = Sys.Execute(CmdStr, UserID);
-            if (Result.empty()) // Success—log it
+            if (Result.empty()) // Successï¿½log it
             {
                 if (m_UndoIndex < static_cast<int>(m_GlobalHistory.size()))
                 {
@@ -173,7 +183,7 @@ namespace xundo
             system& Sys = GetSystem(SystemGUID);
 
             std::string Result = Sys.Execute(GroupName, Cmds, UserID);
-            if (Result.empty()) // Success—log it
+            if (Result.empty()) // Successï¿½log it
             {
                 if (m_UndoIndex < static_cast<int>(m_GlobalHistory.size()))
                 {
@@ -188,6 +198,115 @@ namespace xundo
                 m_UndoIndex++;
             }
             return Result;
+        }
+
+        // Runs a READ-ONLY query on a specific system, by name - a thin passthrough to
+        // system::Query(), never touching m_GlobalHistory (a query is never an undo step - see
+        // query_command_base's own comment in xundo_system.h for why).
+        [[nodiscard]] std::string Query(std::string_view Name, std::string_view CmdStr) noexcept
+        {
+            auto* pSys = GetSystemByName(Name);
+            if (!pSys) return std::format("Unknown system: {}", Name);
+            return pSys->Query(CmdStr);
+        }
+
+        //-------------------------------------------------------------------------------------------------------
+        // Central Command Routing
+        //-------------------------------------------------------------------------------------------------------
+        // Addresses ANY registered system's commands through one fully-qualified string, instead of
+        // the caller needing a direct reference to the right system/GUID:
+        //     "<Namespace>/Edit/<Command> -args..."   -> that system's Execute() (undoable mutation)
+        //     "<Namespace>/Query/<Command> -args..."  -> that system's Query()   (read-only, no history)
+        // <Namespace> is whatever name AddSystem registered that system under (e.g. "NodeOS"). This is
+        // the one entry point meant for an external caller - a debugger, a script, or an AI - that
+        // knows a namespaced command string but not the C++ object graph behind it.
+        [[nodiscard]] std::string Route(std::string_view FullCmd, int UserID = -1) noexcept
+        {
+            const auto FirstSlash = FullCmd.find('/');
+            if (FirstSlash == std::string_view::npos)
+                return std::format("Malformed command (expected 'Namespace/Edit-or-Query/Command'): {}", FullCmd);
+
+            const auto Namespace = FullCmd.substr(0, FirstSlash);
+            const auto Rest1     = FullCmd.substr(FirstSlash + 1);
+            const auto SecondSlash = Rest1.find('/');
+            if (SecondSlash == std::string_view::npos)
+                return std::format("Malformed command (expected 'Namespace/Edit-or-Query/Command'): {}", FullCmd);
+
+            const auto Kind = Rest1.substr(0, SecondSlash);
+            const auto Rest = Rest1.substr(SecondSlash + 1); // "Command -args..."
+
+            auto NameIt = m_NameToGUID.find(std::string(Namespace));
+            if (NameIt == m_NameToGUID.end())
+                return std::format("Unknown namespace: {}", Namespace);
+
+            if (Kind == "Query") return GetSystem(NameIt->second).Query(Rest);
+            if (Kind == "Edit")  return Execute(NameIt->second, Rest, UserID);
+            return std::format("Unknown kind '{}' (expected 'Edit' or 'Query')", Kind);
+        }
+
+        // Lists the registered namespaces - lets a caller (or an AI) discover what's routable before
+        // guessing a namespace name.
+        [[nodiscard]] std::vector<std::string> GetNamespaces() const noexcept
+        {
+            std::vector<std::string> Out;
+            Out.reserve(m_NameToGUID.size());
+            for (auto& [Name, GUID] : m_NameToGUID) Out.push_back(Name);
+            return Out;
+        }
+
+        // One routable command's fully-qualified name ("NodeOS/Edit/Connect") paired with its own
+        // one-line help text (Sys.GetCommandHelp/GetQueryCommandHelp) - the exact pair a help listing
+        // or an autocomplete/fuzzy-match widget needs, gathered across every registered system.
+        struct routable_command
+        {
+            std::string m_FullName;
+            std::string m_Help;
+        };
+
+        [[nodiscard]] std::vector<routable_command> GetRoutableCommands() const noexcept
+        {
+            std::vector<routable_command> Out;
+            for (auto& [Name, GUID] : m_NameToGUID)
+            {
+                auto& Info = m_Systems.at(GUID);
+                for (auto& Cmd : Info.m_System->GetCommandNames())
+                {
+                    auto* pHelp = Info.m_System->GetCommandHelp(Cmd);
+                    Out.push_back({ std::format("{}/Edit/{}", Name, Cmd), pHelp ? pHelp : "" });
+                }
+                for (auto& Cmd : Info.m_System->GetQueryCommandNames())
+                {
+                    auto* pHelp = Info.m_System->GetQueryCommandHelp(Cmd);
+                    Out.push_back({ std::format("{}/Query/{}", Name, Cmd), pHelp ? pHelp : "" });
+                }
+            }
+            return Out;
+        }
+
+        // Looks up one specific routable command's own help text by its fully-qualified name, without
+        // executing anything - what a console's own "-h" handling should call instead of Route()
+        // (whose underlying command_base/query_command_base "-h" path writes straight to std::cout via
+        // xcmdline::parser::printHelp(), not back to the caller as a string).
+        [[nodiscard]] std::string GetCommandHelpFor(std::string_view FullCmd) const noexcept
+        {
+            const auto FirstSlash = FullCmd.find('/');
+            if (FirstSlash == std::string_view::npos) return std::format("Malformed command (expected 'Namespace/Edit-or-Query/Command'): {}", FullCmd);
+            const auto Namespace = FullCmd.substr(0, FirstSlash);
+            const auto Rest1     = FullCmd.substr(FirstSlash + 1);
+            const auto SecondSlash = Rest1.find('/');
+            if (SecondSlash == std::string_view::npos) return std::format("Malformed command (expected 'Namespace/Edit-or-Query/Command'): {}", FullCmd);
+            const auto Kind = Rest1.substr(0, SecondSlash);
+            const auto Cmd  = Rest1.substr(SecondSlash + 1);
+
+            auto NameIt = m_NameToGUID.find(std::string(Namespace));
+            if (NameIt == m_NameToGUID.end()) return std::format("Unknown namespace: {}", Namespace);
+            auto& Sys = m_Systems.at(NameIt->second);
+
+            const char* pHelp = (Kind == "Query") ? Sys.m_System->GetQueryCommandHelp(Cmd)
+                              : (Kind == "Edit")  ? Sys.m_System->GetCommandHelp(Cmd)
+                              : nullptr;
+            if (!pHelp) return std::format("No such command: {}", FullCmd);
+            return pHelp;
         }
 
         //-------------------------------------------------------------------------------------------------------
@@ -236,6 +355,7 @@ namespace xundo
         // Members
         //-------------------------------------------------------------------------------------------------------
         std::unordered_map<uint64_t, system_info> m_Systems;        // Undo systems keyed by GUID
+        std::unordered_map<std::string, uint64_t> m_NameToGUID;     // System name -> GUID, for Route()/GetSystemByName()/Query()
         std::vector<history_entry>                m_GlobalHistory;  // Global timeline of actions
         int                                       m_UndoIndex = 0;  // Current position in global history
     };

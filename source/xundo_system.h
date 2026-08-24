@@ -25,6 +25,7 @@ namespace xundo
 {
     class   system;
     struct  command_base;
+    struct  query_command_base;
     class   history;
     namespace system_example { int StressTest(); }
 
@@ -293,6 +294,45 @@ namespace xundo
     };
 
     //-----------------------------------------------------------------------------------------------------------
+    // Query Command Base: Interface for read-only commands - debugging/introspection/AI-facing
+    // questions about the system's data, as opposed to command_base's mutations. Deliberately NOT an
+    // Undo()/BackupCurrenState() pair with empty bodies bolted onto command_base's contract - a query
+    // has no state to back up or undo, and system::Query() (below) never touches m_History/disk
+    // persistence, so a query never shows up as a step in the undo timeline.
+    //-----------------------------------------------------------------------------------------------------------
+    struct query_command_base
+    {
+        // Constructor: Links command to system and database
+        query_command_base(system& System, const char* pName, void* pDataBase) noexcept;
+
+        // Gets typed reference to database
+        template<typename T> T& get() noexcept
+        {
+            return *static_cast<T*>(m_pDataBase);
+        }
+
+        // Virtual methods for command behavior
+        virtual const char*     getCommandHelp      ()          const   noexcept = 0;
+        virtual void            RegisterArguments   ()                  noexcept = 0;
+        virtual std::string     Query               ()                  noexcept = 0; // returns the answer text, or an error
+
+        // Parses command string into arguments - same convention as command_base::Parse.
+        std::string             Parse(std::string_view cmd_str) noexcept
+        {
+            m_Parser.clearArgs();
+            if (auto Err = m_Parser.Parse(cmd_str); Err) return std::string(Err.getMessage());
+            return {};
+        }
+
+        // Members: Core command data
+        system&                  m_System;
+        xcmdline::parser         m_Parser       = {};
+        const char*              m_pCommandName = {};
+        void*                    m_pDataBase    = {};
+        xcmdline::parser::handle m_hHelp        = {};
+    };
+
+    //-----------------------------------------------------------------------------------------------------------
     // Utility: Extracts command name from a string
     //-----------------------------------------------------------------------------------------------------------
     std::string_view getCommandName(std::string_view str)
@@ -473,6 +513,61 @@ namespace xundo
                 UpdateLRU();
             }
             return {};
+        }
+
+        // Executes a single READ-ONLY query command by name - never touches m_History, m_UndoIndex, or
+        // disk persistence (unlike Execute, above), so it never becomes an undo step and never blocks
+        // on assert(!m_Done) the way a mutating command must. Meant for debugging and AI-facing
+        // introspection: "figure out the answer" without needing a mutation to do it, and without
+        // polluting the undo timeline a human user sees.
+        [[nodiscard]] std::string Query(std::string_view cmd_str) noexcept
+        {
+            auto Name  = getCommandName(cmd_str);
+            auto CmdIt = m_QueryCommands.find(std::string(Name));
+
+            if (CmdIt == m_QueryCommands.end())
+                return std::format("Unable to find the query command: {}", Name);
+
+            auto& Cmd = *CmdIt->second;
+            if (auto Err = Cmd.Parse(cmd_str); !Err.empty()) return Err;
+            if (Cmd.m_Parser.hasOption(Cmd.m_hHelp))
+            {
+                Cmd.m_Parser.printHelp();
+                return {};
+            }
+            return Cmd.Query();
+        }
+
+        //-------------------------------------------------------------------------------------------------------
+        // Discovery: lets a caller (a help system, an autocomplete widget, or an AI) enumerate what's
+        // callable and read each command's own one-line help WITHOUT parsing/executing anything - the
+        // same getCommandHelp() every command already implements for its "-h" text, just reachable by
+        // name instead of only through a live command_base/query_command_base instance.
+        //-------------------------------------------------------------------------------------------------------
+        [[nodiscard]] std::vector<std::string> GetCommandNames() const noexcept
+        {
+            std::vector<std::string> Out; Out.reserve(m_Commands.size());
+            for (auto& [Name, _] : m_Commands) Out.push_back(Name);
+            return Out;
+        }
+
+        [[nodiscard]] std::vector<std::string> GetQueryCommandNames() const noexcept
+        {
+            std::vector<std::string> Out; Out.reserve(m_QueryCommands.size());
+            for (auto& [Name, _] : m_QueryCommands) Out.push_back(Name);
+            return Out;
+        }
+
+        [[nodiscard]] const char* GetCommandHelp(std::string_view Name) const noexcept
+        {
+            auto It = m_Commands.find(std::string(Name));
+            return It == m_Commands.end() ? nullptr : It->second->getCommandHelp();
+        }
+
+        [[nodiscard]] const char* GetQueryCommandHelp(std::string_view Name) const noexcept
+        {
+            auto It = m_QueryCommands.find(std::string(Name));
+            return It == m_QueryCommands.end() ? nullptr : It->second->getCommandHelp();
         }
 
         //-------------------------------------------------------------------------------------------------------
@@ -814,6 +909,15 @@ namespace xundo
             Cmd.m_hHelp = Cmd.m_Parser.addOption("h", "Show this help message\nUse -h or --h to display", false, 0);
         }
 
+        // Registers a read-only query command with the system - separate map from m_Commands so a
+        // query command name can never collide with (or be reachable through) Undo/Redo/history
+        // machinery, and Query() below never needs to check which kind of map it found a name in.
+        void RegisterQueryCommand(query_command_base& Cmd, std::string_view Name) noexcept
+        {
+            m_QueryCommands[std::string(Name)] = &Cmd;
+            Cmd.m_hHelp = Cmd.m_Parser.addOption("h", "Show this help message\nUse -h or --h to display", false, 0);
+        }
+
         // Manages LRU cache for recent steps
         void UpdateLRU() noexcept
         {
@@ -951,15 +1055,17 @@ namespace xundo
         //-------------------------------------------------------------------------------------------------------
         // Members: Core system state
         //-------------------------------------------------------------------------------------------------------
-        using history_vector = std::vector<std::shared_ptr<history_entry>>;
-        using lru_list       = std::list<std::shared_ptr<history_entry>>;
-        using command_map    = std::unordered_map<std::string, command_base*>;
-        using io_queue       = std::queue<std::unique_ptr<job::base>>;
+        using history_vector    = std::vector<std::shared_ptr<history_entry>>;
+        using lru_list          = std::list<std::shared_ptr<history_entry>>;
+        using command_map       = std::unordered_map<std::string, command_base*>;
+        using query_command_map = std::unordered_map<std::string, query_command_base*>;
+        using io_queue          = std::queue<std::unique_ptr<job::base>>;
 
         int                                 m_UndoIndex         = 0;
         history_vector                      m_History           = {};
         lru_list                            m_LRU               = {};
         command_map                         m_Commands          = {};
+        query_command_map                   m_QueryCommands     = {};
         std::string                         m_UndoPath          = {};
         int                                 m_DefaultUser       = 1;
         size_t                              m_MaxCachedSteps    = 50;
@@ -974,6 +1080,7 @@ namespace xundo
         std::uint64_t                       m_CommandCounter    = 0;
         friend int system_example::StressTest();
         friend struct command_base;
+        friend struct query_command_base;
         friend class history;
     };
 
@@ -984,6 +1091,15 @@ namespace xundo
         : m_System(System), m_pCommandName(pName), m_pDataBase(pDataBase)
     {
         m_System.RegisterCommand(*this, pName);
+    }
+
+    //-----------------------------------------------------------------------------------------------------------
+    // Query Command Base Implementation
+    //-----------------------------------------------------------------------------------------------------------
+    query_command_base::query_command_base(system& System, const char* pName, void* pDataBase) noexcept
+        : m_System(System), m_pCommandName(pName), m_pDataBase(pDataBase)
+    {
+        m_System.RegisterQueryCommand(*this, pName);
     }
 
     //-----------------------------------------------------------------------------------------------------------
