@@ -335,7 +335,12 @@ namespace xundo
     //-----------------------------------------------------------------------------------------------------------
     // Utility: Extracts command name from a string
     //-----------------------------------------------------------------------------------------------------------
-    std::string_view getCommandName(std::string_view str)
+    // inline: this is an out-of-class free-function definition living in a header, given external
+    // linkage by default - harmless as long as only ONE .cpp in a given executable ever included
+    // this header, but a real ODR violation (multiply-defined symbol at link time) the moment a
+    // second .cpp does too. Confirmed live: E27_NodeOS_Editor.cpp was the sole consumer until
+    // E29_LevelScene_Editor.cpp started using xundo too, in the SAME executable.
+    inline std::string_view getCommandName(std::string_view str)
     {
         size_t pos = str.find(' ');
         return pos == std::string_view::npos ? str : str.substr(0, pos);
@@ -1086,8 +1091,14 @@ namespace xundo
 
     //-----------------------------------------------------------------------------------------------------------
     // Command Base Implementation
+    //
+    // inline on every out-of-class definition below (constructors and job::*::Execute alike) for the
+    // same reason as getCommandName's own comment above - each was silently relying on this header
+    // only ever being #include'd by a single .cpp in a given link, which stopped being true the
+    // moment E29_LevelScene_Editor.cpp started using xundo alongside E27_NodeOS_Editor.cpp in the
+    // same executable.
     //-----------------------------------------------------------------------------------------------------------
-    command_base::command_base(system& System, const char* pName, void* pDataBase) noexcept
+    inline command_base::command_base(system& System, const char* pName, void* pDataBase) noexcept
         : m_System(System), m_pCommandName(pName), m_pDataBase(pDataBase)
     {
         m_System.RegisterCommand(*this, pName);
@@ -1096,7 +1107,7 @@ namespace xundo
     //-----------------------------------------------------------------------------------------------------------
     // Query Command Base Implementation
     //-----------------------------------------------------------------------------------------------------------
-    query_command_base::query_command_base(system& System, const char* pName, void* pDataBase) noexcept
+    inline query_command_base::query_command_base(system& System, const char* pName, void* pDataBase) noexcept
         : m_System(System), m_pCommandName(pName), m_pDataBase(pDataBase)
     {
         m_System.RegisterQueryCommand(*this, pName);
@@ -1104,7 +1115,7 @@ namespace xundo
 
     //-----------------------------------------------------------------------------------------------------------
 
-    void job::save_to_disk::Execute() noexcept
+    inline void job::save_to_disk::Execute() noexcept
     {
         std::unique_lock<std::mutex> Lock(m_Entry->m_Mutex);
         if (!m_Entry->m_bHasBeenSaved && Save(*m_Entry, m_System.getUndoPath()))
@@ -1113,7 +1124,7 @@ namespace xundo
 
     //-----------------------------------------------------------------------------------------------------------
 
-    void job::delete_entries::Execute() noexcept
+    inline void job::delete_entries::Execute() noexcept
     {
         for (auto& TimeStamp : m_TimeStamps)
             std::filesystem::remove(std::format("{}/UndoStep-{}", m_System.getUndoPath(), TimeStamp));
@@ -1121,7 +1132,7 @@ namespace xundo
 
     //-----------------------------------------------------------------------------------------------------------
 
-    void job::warmup_cache::Execute() noexcept
+    inline void job::warmup_cache::Execute() noexcept
     {
         std::unique_lock<std::mutex> Lock(m_Entry->m_Mutex);
         if (m_Entry->m_CacheUndoData.empty())
@@ -1130,7 +1141,7 @@ namespace xundo
 
     //-----------------------------------------------------------------------------------------------------------
 
-    void job::load_entries::Execute() noexcept
+    inline void job::load_entries::Execute() noexcept
     {
         std::unique_lock<std::mutex> Lock(m_Entry->m_Mutex);
         warmup_cache::Load(*m_Entry, m_System.getUndoPath(), true, false);
