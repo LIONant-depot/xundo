@@ -20,6 +20,7 @@
 #include <cassert>
 #include <span>
 #include <array>
+#include <functional>
 
 namespace xundo
 {
@@ -28,6 +29,21 @@ namespace xundo
     struct  query_command_base;
     class   history;
     namespace system_example { int StressTest(); }
+
+    //-----------------------------------------------------------------------------------------------------------
+    // Optional job-submission injection point (direct user request: a small, standalone library like this
+    // one shouldn't take a hard dependency on a job scheduler just because a HOST application happens to
+    // have one - forcing that onto every consumer, including ones with no scheduler at all, inverts the
+    // whole point of xundo staying small and reusable). Default behavior (system::SetJobSubmitter never
+    // called) is completely unchanged - xundo's own built-in 4-thread pool (see Init()) still does the work.
+    // If a host app DOES have something like xscheduler already, it can hand in a thin adapter here instead;
+    // xundo never needs to know what that something actually is.
+    //-----------------------------------------------------------------------------------------------------------
+    struct i_job_submitter
+    {
+        virtual      ~i_job_submitter (void)                        noexcept = default;
+        virtual void  Submit          (std::function<void()> Job)   noexcept = 0;
+    };
 
     //-----------------------------------------------------------------------------------------------------------
     // History Entry: Represents a single undo/redo step, including groups
@@ -384,6 +400,19 @@ namespace xundo
         }
 
         //-------------------------------------------------------------------------------------------------------
+        // Job submission - see i_job_submitter's own comment for the full reasoning. Call BEFORE Init() if
+        // you also want to suppress xundo's own built-in thread pool (there's no reason to spawn 4 threads
+        // that will sit idle forever once an external submitter is routing everything elsewhere) - calling
+        // it after Init() still redirects PushJob correctly, it just leaves those 4 threads allocated but
+        // permanently unused. NOTE: SynJobQueue()'s own "wait for the queue to drain" only ever watches
+        // xundo's OWN m_IOQueue - once a submitter is set, that queue is never populated (everything routes
+        // externally instead), so SynJobQueue() returns immediately rather than actually waiting for
+        // externally-submitted work to finish; xundo has no visibility into an external scheduler's own
+        // completion state to wait on instead.
+        //-------------------------------------------------------------------------------------------------------
+        void SetJobSubmitter(i_job_submitter* pSubmitter) noexcept { m_pJobSubmitter = pSubmitter; }
+
+        //-------------------------------------------------------------------------------------------------------
         // Initialization
         //-------------------------------------------------------------------------------------------------------
         // Sets up the system, optionally loads prior history
@@ -396,7 +425,8 @@ namespace xundo
 
             if (!UndoPath.empty())
             {
-                for (int i = 0; i < 4; ++i) m_IOThread.emplace_back(std::thread(&system::IOWorker, std::ref(*this)));
+                if (!m_pJobSubmitter)
+                    for (int i = 0; i < 4; ++i) m_IOThread.emplace_back(std::thread(&system::IOWorker, std::ref(*this)));
                 if (m_bAutoLoadSave)
                 {
                     std::string     Path = std::format("{}/UndoTimestamps.bin", m_UndoPath);
@@ -969,6 +999,17 @@ namespace xundo
         // Queues an I/O job for execution
         void PushJob(std::unique_ptr<job::base>&& Job) noexcept
         {
+            // Routed to the injected submitter instead of xundo's own queue/thread-pool when one is set
+            // (see i_job_submitter's own comment) - wrapped in a shared_ptr so the copyable
+            // std::function<void()> contract is satisfied while ownership still transfers cleanly; the Job
+            // stays alive until Execute() actually runs, on whichever thread that ends up being.
+            if (m_pJobSubmitter)
+            {
+                std::shared_ptr<job::base> SharedJob(std::move(Job));
+                m_pJobSubmitter->Submit([SharedJob]() noexcept { SharedJob->Execute(); });
+                return;
+            }
+
             {
                 std::lock_guard<std::mutex> Lock(m_Mutex);
                 m_IOQueue.push(std::move(Job));
@@ -1092,6 +1133,7 @@ namespace xundo
         mutable std::mutex                  m_Mutex             = {};
         std::condition_variable             m_Cond              = {};
         io_queue                            m_IOQueue           = {};
+        i_job_submitter*                    m_pJobSubmitter     = nullptr; // optional - see SetJobSubmitter's own comment
         uint32_t                            m_MaxUndoSteps      = 1000; // Max undo steps limit
         bool                                m_Done              = true;
         bool                                m_bAutoLoadSave     = false;
