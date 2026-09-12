@@ -587,6 +587,19 @@ namespace xundo
         }
 
         //-------------------------------------------------------------------------------------------------------
+        // Discards every entry PAST the current UndoIndex (the abandoned "redo branch"), without
+        // executing a new command - the same truncation Execute() already runs internally
+        // (PruneHistory(), called automatically the next time a command executes past this point),
+        // exposed here for a caller that needs the guarantee to hold RIGHT NOW rather than "whenever
+        // something else happens to execute next". Added for a caller that walks JumpTo() back to an
+        // earlier marker (e.g. "the index where Play started") and needs those now-stale entries gone
+        // immediately, even if it ends up having nothing new to push afterward - otherwise they'd sit
+        // Redo()-able, referencing whatever state existed before the walk-back, which is exactly the
+        // hazard the caller is trying to close.
+        //-------------------------------------------------------------------------------------------------------
+        void TruncateRedoBranch() noexcept { PruneHistory(); }
+
+        //-------------------------------------------------------------------------------------------------------
         // Read-only history view, for a UI that wants to show/pick from the full undo/redo timeline
         // (e.g. a history dropdown next to Undo/Redo buttons) rather than only stepping one at a time.
         //-------------------------------------------------------------------------------------------------------
